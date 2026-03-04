@@ -1,0 +1,182 @@
+name: Add DevOps + CI (Makefile, Docker, CI workflow)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  scaffold:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Create DevOps files
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # -------------------------
+          # Makefile
+          # -------------------------
+          cat > Makefile <<'EOF'
+          .PHONY: help setup data train train-ci gen serve clean
+
+          help:
+          	@echo "Targets:"
+          	@echo "  setup     - create venv and install deps"
+          	@echo "  data      - create sample dataset"
+          	@echo "  train     - train with configs/tiny.json"
+          	@echo "  train-ci  - short train with configs/ci.json"
+          	@echo "  gen       - generate from checkpoints/model.pt"
+          	@echo "  serve     - run API server from checkpoints/model.pt"
+          	@echo "  clean     - remove venv, checkpoints, caches"
+
+          setup:
+          	python -m venv .venv
+          	. .venv/bin/activate && pip install -U pip && pip install -r requirements.txt
+
+          data:
+          	python scripts/download_sample_data.py
+
+          train:
+          	PYTHONPATH=src python -m barebonellm.train --config configs/tiny.json
+
+          train-ci:
+          	PYTHONPATH=src python -m barebonellm.train --config configs/ci.json
+
+          gen:
+          	PYTHONPATH=src python -m barebonellm.generate --checkpoint checkpoints/model.pt --prompt "Hello"
+
+          serve:
+          	PYTHONPATH=src python -m barebonellm.server --checkpoint checkpoints/model.pt --host 0.0.0.0 --port 8000
+
+          clean:
+          	rm -rf .venv checkpoints __pycache__ .pytest_cache
+          EOF
+
+          # -------------------------
+          # Docker
+          # -------------------------
+          cat > Dockerfile <<'EOF'
+          FROM python:3.11-slim
+
+          WORKDIR /app
+          COPY requirements.txt .
+          RUN pip install --no-cache-dir -r requirements.txt
+
+          COPY . .
+          ENV PYTHONPATH=/app/src
+
+          # default: start API server (expects checkpoints/model.pt to exist)
+          CMD ["python", "-m", "barebonellm.server", "--checkpoint", "checkpoints/model.pt", "--host", "0.0.0.0", "--port", "8000"]
+          EOF
+
+          cat > .dockerignore <<'EOF'
+          .git
+          .github
+          __pycache__/
+          *.pyc
+          .venv/
+          checkpoints/
+          runs/
+          data/train.txt
+          *.pt
+          EOF
+
+          # -------------------------
+          # CI config (fast)
+          # -------------------------
+          mkdir -p configs
+          cat > configs/ci.json <<'EOF'
+          {
+            "seed": 1337,
+            "device": "auto",
+            "dtype": "auto",
+            "data_path": "data/train.txt",
+            "context_length": 64,
+            "batch_size": 8,
+            "num_workers": 0,
+            "model": {
+              "vocab_size": 256,
+              "n_layers": 2,
+              "n_heads": 2,
+              "d_model": 64,
+              "d_ff": 256,
+              "dropout": 0.1
+            },
+            "train": {
+              "max_steps": 20,
+              "lr": 0.0003,
+              "weight_decay": 0.0,
+              "grad_clip": 1.0,
+              "log_every": 5,
+              "save_every": 20,
+              "checkpoint_dir": "checkpoints"
+            }
+          }
+          EOF
+
+          # -------------------------
+          # CI workflow (push/PR)
+          # -------------------------
+          mkdir -p .github/workflows
+          cat > .github/workflows/ci.yml <<'EOF'
+          name: CI
+
+          on:
+            push:
+              branches: [ "main" ]
+            pull_request:
+              branches: [ "main" ]
+
+          jobs:
+            sanity:
+              runs-on: ubuntu-latest
+              steps:
+                - uses: actions/checkout@v4
+
+                - name: Set up Python
+                  uses: actions/setup-python@v5
+                  with:
+                    python-version: "3.11"
+
+                - name: Install deps
+                  run: |
+                    python -m pip install -U pip
+                    pip install -r requirements.txt
+
+                - name: Compile check
+                  run: |
+                    python -m py_compile src/barebonellm/*.py
+
+                - name: Create sample data
+                  run: |
+                    python scripts/download_sample_data.py
+
+                - name: Short train (CI)
+                  run: |
+                    PYTHONPATH=src python -m barebonellm.train --config configs/ci.json
+
+                - name: Generate (smoke)
+                  run: |
+                    PYTHONPATH=src python -m barebonellm.generate --checkpoint checkpoints/model.pt --prompt "Hello" --max_new_tokens 40
+          EOF
+
+      - name: Commit & push
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions"
+          git config user.email "actions@github.com"
+
+          git add -A
+          if git diff --cached --quiet; then
+            echo "Nothing to commit."
+            exit 0
+          fi
+
+          git commit -m "Add Makefile, Docker support, and CI workflow"
+          git push
