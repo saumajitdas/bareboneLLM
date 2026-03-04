@@ -1,0 +1,39 @@
+name: CI
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+jobs:
+  sanity:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install deps
+        run: |
+          python -m pip install -U pip
+          pip install -r requirements.txt
+
+      - name: Compile check
+        run: |
+          python -m py_compile src/barebonellm/*.py
+
+      - name: Create sample data
+        run: |
+          python scripts/download_sample_data.py
+
+      - name: Short train (CI)
+        run: |
+          PYTHONPATH=src python -m barebonellm.train --config configs/ci.json
+
+      - name: Generate (smoke)
+        run: |
+          PYTHONPATH=src python -m barebonellm.generate --checkpoint checkpoints/model.pt --prompt "Hello" --max_new_tokens 40
