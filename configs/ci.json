@@ -1,0 +1,26 @@
+{
+  "seed": 1337,
+  "device": "auto",
+  "dtype": "auto",
+  "data_path": "data/train.txt",
+  "context_length": 64,
+  "batch_size": 8,
+  "num_workers": 0,
+  "model": {
+    "vocab_size": 256,
+    "n_layers": 2,
+    "n_heads": 2,
+    "d_model": 64,
+    "d_ff": 256,
+    "dropout": 0.1
+  },
+  "train": {
+    "max_steps": 20,
+    "lr": 0.0003,
+    "weight_decay": 0.0,
+    "grad_clip": 1.0,
+    "log_every": 5,
+    "save_every": 20,
+    "checkpoint_dir": "checkpoints"
+  }
+}

@@ -1,0 +1,9 @@
+.git
+.github
+__pycache__/
+*.pyc
+.venv/
+checkpoints/
+runs/
+data/train.txt
+*.pt
