@@ -1,0 +1,532 @@
+name: Init bareboneLLM (scaffold + code)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  init:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Generate project structure + code
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          mkdir -p src/barebonellm configs data scripts
+
+          cat > .gitignore <<'EOF'
+          __pycache__/
+          *.pyc
+          .venv/
+          checkpoints/
+          runs/
+          *.pt
+          data/train.txt
+          EOF
+
+          cat > requirements.txt <<'EOF'
+          torch>=2.2.0
+          tqdm>=4.66.0
+          fastapi>=0.110.0
+          uvicorn>=0.27.0
+          pydantic>=2.6.0
+          EOF
+
+          cat > pyproject.toml <<'EOF'
+          [project]
+          name = "barebonellm"
+          version = "0.1.0"
+          description = "Barebone GPT-style LLM from scratch (train + generate + serve)."
+          requires-python = ">=3.10"
+
+          [tool.setuptools]
+          package-dir = {"" = "src"}
+
+          [tool.setuptools.packages.find]
+          where = ["src"]
+          EOF
+
+          cat > README.md <<'EOF'
+          # bareboneLLM
+
+          A minimal GPT-style (decoder-only) language model you can train from scratch.
+
+          ## Quickstart
+
+          ```bash
+          python -m venv .venv
+          source .venv/bin/activate
+          pip install -r requirements.txt
+
+          python scripts/download_sample_data.py
+          PYTHONPATH=src python -m barebonellm.train --config configs/tiny.json
+          PYTHONPATH=src python -m barebonellm.generate --checkpoint checkpoints/model.pt --prompt "Hello"
+          PYTHONPATH=src python -m barebonellm.server --checkpoint checkpoints/model.pt
+          ```
+
+          ## API
+
+          ```bash
+          curl -X POST "http://127.0.0.1:8000/generate" \
+            -H "Content-Type: application/json" \
+            -d '{"prompt":"Hello","max_new_tokens":80,"temperature":1.0,"top_k":64}'
+          ```
+          EOF
+
+          cat > configs/tiny.json <<'EOF'
+          {
+            "seed": 1337,
+            "device": "auto",
+            "dtype": "auto",
+
+            "data_path": "data/train.txt",
+
+            "context_length": 256,
+            "batch_size": 32,
+            "num_workers": 0,
+
+            "model": {
+              "vocab_size": 256,
+              "n_layers": 4,
+              "n_heads": 4,
+              "d_model": 256,
+              "d_ff": 1024,
+              "dropout": 0.1
+            },
+
+            "train": {
+              "max_steps": 2000,
+              "lr": 0.0003,
+              "weight_decay": 0.1,
+              "grad_clip": 1.0,
+              "log_every": 50,
+              "save_every": 500,
+              "checkpoint_dir": "checkpoints"
+            }
+          }
+          EOF
+
+          cat > scripts/download_sample_data.py <<'EOF'
+          from pathlib import Path
+
+          SAMPLE = """\
+          This is a tiny sample dataset.
+          Replace this with real text for meaningful training.
+          The quick brown fox jumps over the lazy dog.
+          """
+
+          def main():
+              Path("data").mkdir(parents=True, exist_ok=True)
+              p = Path("data/train.txt")
+              if not p.exists():
+                  p.write_text(SAMPLE, encoding="utf-8")
+                  print(f"Wrote {p}")
+              else:
+                  print(f"{p} already exists")
+
+          if __name__ == "__main__":
+              main()
+          EOF
+
+          cat > src/barebonellm/__init__.py <<'EOF'
+          __all__ = []
+          EOF
+
+          cat > src/barebonellm/set_seed.py <<'EOF'
+          import os, random, torch
+
+          def set_seed(seed: int) -> None:
+              random.seed(seed)
+              os.environ["PYTHONHASHSEED"] = str(seed)
+              torch.manual_seed(seed)
+              torch.cuda.manual_seed_all(seed)
+              torch.backends.cudnn.deterministic = True
+              torch.backends.cudnn.benchmark = False
+          EOF
+
+          cat > src/barebonellm/utils.py <<'EOF'
+          import os, torch
+
+          def pick_device(device: str) -> str:
+              if device == "auto":
+                  return "cuda" if torch.cuda.is_available() else "cpu"
+              return device
+
+          def ensure_dir(path: str) -> None:
+              os.makedirs(path, exist_ok=True)
+          EOF
+
+          cat > src/barebonellm/tokenizer.py <<'EOF'
+          from dataclasses import dataclass
+          from typing import List
+
+          @dataclass
+          class ByteTokenizer:
+              vocab_size: int = 256
+
+              def encode(self, text: str) -> List[int]:
+                  b = text.encode("utf-8", errors="replace")
+                  return list(b)
+
+              def decode(self, ids: List[int]) -> str:
+                  b = bytes([i % 256 for i in ids])
+                  return b.decode("utf-8", errors="replace")
+          EOF
+
+          cat > src/barebonellm/dataset.py <<'EOF'
+          from dataclasses import dataclass
+          from typing import Tuple
+          import torch
+          from torch.utils.data import Dataset
+
+          @dataclass
+          class TokenDataset(Dataset):
+              tokens: torch.Tensor
+              context_length: int
+
+              def __len__(self):
+                  return max(0, self.tokens.numel() - self.context_length - 1)
+
+              def __getitem__(self, i: int) -> Tuple[torch.Tensor, torch.Tensor]:
+                  x = self.tokens[i : i + self.context_length]
+                  y = self.tokens[i + 1 : i + 1 + self.context_length]
+                  return x, y
+          EOF
+
+          cat > src/barebonellm/model.py <<'EOF'
+          import math
+          import torch
+          import torch.nn as nn
+          import torch.nn.functional as F
+
+          class CausalSelfAttention(nn.Module):
+              def __init__(self, d_model: int, n_heads: int, dropout: float):
+                  super().__init__()
+                  assert d_model % n_heads == 0
+                  self.n_heads = n_heads
+                  self.head_dim = d_model // n_heads
+                  self.qkv = nn.Linear(d_model, 3 * d_model, bias=False)
+                  self.proj = nn.Linear(d_model, d_model, bias=False)
+                  self.dropout = nn.Dropout(dropout)
+
+              def forward(self, x):
+                  B, T, C = x.shape
+                  qkv = self.qkv(x)
+                  q, k, v = qkv.split(C, dim=-1)
+
+                  q = q.view(B, T, self.n_heads, self.head_dim).transpose(1, 2)
+                  k = k.view(B, T, self.n_heads, self.head_dim).transpose(1, 2)
+                  v = v.view(B, T, self.n_heads, self.head_dim).transpose(1, 2)
+
+                  att = (q @ k.transpose(-2, -1)) / math.sqrt(self.head_dim)
+                  mask = torch.tril(torch.ones(T, T, device=x.device)).unsqueeze(0).unsqueeze(0)
+                  att = att.masked_fill(mask == 0, float("-inf"))
+                  att = F.softmax(att, dim=-1)
+                  att = self.dropout(att)
+
+                  y = att @ v
+                  y = y.transpose(1, 2).contiguous().view(B, T, C)
+                  y = self.proj(y)
+                  y = self.dropout(y)
+                  return y
+
+          class Block(nn.Module):
+              def __init__(self, d_model: int, n_heads: int, d_ff: int, dropout: float):
+                  super().__init__()
+                  self.ln1 = nn.LayerNorm(d_model)
+                  self.attn = CausalSelfAttention(d_model, n_heads, dropout)
+                  self.ln2 = nn.LayerNorm(d_model)
+                  self.mlp = nn.Sequential(
+                      nn.Linear(d_model, d_ff),
+                      nn.GELU(),
+                      nn.Linear(d_ff, d_model),
+                      nn.Dropout(dropout),
+                  )
+
+              def forward(self, x):
+                  x = x + self.attn(self.ln1(x))
+                  x = x + self.mlp(self.ln2(x))
+                  return x
+
+          class GPT(nn.Module):
+              def __init__(self, vocab_size: int, context_length: int, n_layers: int, n_heads: int,
+                           d_model: int, d_ff: int, dropout: float):
+                  super().__init__()
+                  self.vocab_size = vocab_size
+                  self.context_length = context_length
+
+                  self.tok_emb = nn.Embedding(vocab_size, d_model)
+                  self.pos_emb = nn.Embedding(context_length, d_model)
+                  self.drop = nn.Dropout(dropout)
+
+                  self.blocks = nn.ModuleList([Block(d_model, n_heads, d_ff, dropout) for _ in range(n_layers)])
+                  self.ln_f = nn.LayerNorm(d_model)
+                  self.head = nn.Linear(d_model, vocab_size, bias=False)
+
+                  self.apply(self._init_weights)
+
+              def _init_weights(self, m):
+                  if isinstance(m, (nn.Linear, nn.Embedding)):
+                      nn.init.normal_(m.weight, mean=0.0, std=0.02)
+
+              def forward(self, idx, targets=None):
+                  B, T = idx.shape
+                  assert T <= self.context_length, "Sequence too long"
+                  pos = torch.arange(0, T, device=idx.device).unsqueeze(0)
+
+                  x = self.tok_emb(idx) + self.pos_emb(pos)
+                  x = self.drop(x)
+                  for blk in self.blocks:
+                      x = blk(x)
+                  x = self.ln_f(x)
+                  logits = self.head(x)
+
+                  loss = None
+                  if targets is not None:
+                      loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1))
+                  return logits, loss
+
+              @torch.no_grad()
+              def generate(self, idx, max_new_tokens: int, temperature: float = 1.0, top_k: int | None = None):
+                  self.eval()
+                  for _ in range(max_new_tokens):
+                      idx_cond = idx[:, -self.context_length:]
+                      logits, _ = self(idx_cond)
+                      logits = logits[:, -1, :] / max(temperature, 1e-6)
+
+                      if top_k is not None:
+                          v, _ = torch.topk(logits, min(top_k, logits.size(-1)))
+                          logits[logits < v[:, [-1]]] = -float("inf")
+
+                      probs = F.softmax(logits, dim=-1)
+                      next_id = torch.multinomial(probs, num_samples=1)
+                      idx = torch.cat([idx, next_id], dim=1)
+                  return idx
+          EOF
+
+          cat > src/barebonellm/train.py <<'EOF'
+          import argparse
+          from pathlib import Path
+          import json
+          import torch
+          from torch.utils.data import DataLoader
+          from tqdm import tqdm
+
+          from .set_seed import set_seed
+          from .tokenizer import ByteTokenizer
+          from .dataset import TokenDataset
+          from .model import GPT
+          from .utils import pick_device, ensure_dir
+
+          def main():
+              ap = argparse.ArgumentParser()
+              ap.add_argument("--config", required=True)
+              args = ap.parse_args()
+
+              cfg = json.loads(Path(args.config).read_text(encoding="utf-8"))
+              set_seed(int(cfg.get("seed", 1337)))
+
+              device = pick_device(cfg.get("device", "auto"))
+
+              text = Path(cfg["data_path"]).read_text(encoding="utf-8", errors="replace")
+              tok = ByteTokenizer()
+              ids = torch.tensor(tok.encode(text), dtype=torch.long)
+
+              ds = TokenDataset(ids, context_length=int(cfg["context_length"]))
+              dl = DataLoader(ds, batch_size=int(cfg["batch_size"]), shuffle=True, num_workers=int(cfg.get("num_workers", 0)))
+
+              mcfg = cfg["model"]
+              model = GPT(
+                  vocab_size=int(mcfg["vocab_size"]),
+                  context_length=int(cfg["context_length"]),
+                  n_layers=int(mcfg["n_layers"]),
+                  n_heads=int(mcfg["n_heads"]),
+                  d_model=int(mcfg["d_model"]),
+                  d_ff=int(mcfg["d_ff"]),
+                  dropout=float(mcfg.get("dropout", 0.0)),
+              ).to(device)
+
+              tcfg = cfg["train"]
+              ckpt_dir = tcfg.get("checkpoint_dir", "checkpoints")
+              ensure_dir(ckpt_dir)
+
+              optim = torch.optim.AdamW(model.parameters(), lr=float(tcfg["lr"]), weight_decay=float(tcfg.get("weight_decay", 0.0)))
+
+              max_steps = int(tcfg["max_steps"])
+              grad_clip = float(tcfg.get("grad_clip", 1.0))
+              log_every = int(tcfg.get("log_every", 50))
+              save_every = int(tcfg.get("save_every", 500))
+
+              ckpt_path = Path(ckpt_dir) / "model.pt"
+
+              step = 0
+              it = iter(dl)
+              pbar = tqdm(total=max_steps, desc="train")
+
+              while step < max_steps:
+                  try:
+                      x, y = next(it)
+                  except StopIteration:
+                      it = iter(dl)
+                      x, y = next(it)
+
+                  x, y = x.to(device), y.to(device)
+
+                  model.train()
+                  _, loss = model(x, y)
+
+                  optim.zero_grad(set_to_none=True)
+                  loss.backward()
+                  torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
+                  optim.step()
+
+                  step += 1
+                  pbar.update(1)
+
+                  if step % log_every == 0:
+                      pbar.set_postfix(loss=float(loss.detach().cpu()))
+
+                  if step % save_every == 0 or step == max_steps:
+                      torch.save({"config": cfg, "model_state": model.state_dict()}, ckpt_path)
+
+              pbar.close()
+              print(f"Saved checkpoint to {ckpt_path}")
+
+          if __name__ == "__main__":
+              main()
+          EOF
+
+          cat > src/barebonellm/generate.py <<'EOF'
+          import argparse
+          import torch
+
+          from .tokenizer import ByteTokenizer
+          from .model import GPT
+          from .utils import pick_device
+
+          def main():
+              ap = argparse.ArgumentParser()
+              ap.add_argument("--checkpoint", required=True)
+              ap.add_argument("--prompt", required=True)
+              ap.add_argument("--max_new_tokens", type=int, default=200)
+              ap.add_argument("--temperature", type=float, default=1.0)
+              ap.add_argument("--top_k", type=int, default=64)
+              args = ap.parse_args()
+
+              device = pick_device("auto")
+              tok = ByteTokenizer()
+
+              ckpt = torch.load(args.checkpoint, map_location=device)
+              cfg = ckpt["config"]
+              mcfg = cfg["model"]
+
+              model = GPT(
+                  vocab_size=int(mcfg["vocab_size"]),
+                  context_length=int(cfg["context_length"]),
+                  n_layers=int(mcfg["n_layers"]),
+                  n_heads=int(mcfg["n_heads"]),
+                  d_model=int(mcfg["d_model"]),
+                  d_ff=int(mcfg["d_ff"]),
+                  dropout=float(mcfg.get("dropout", 0.0)),
+              ).to(device)
+
+              model.load_state_dict(ckpt["model_state"])
+              model.eval()
+
+              x = torch.tensor(tok.encode(args.prompt), dtype=torch.long, device=device).unsqueeze(0)
+              y = model.generate(x, max_new_tokens=args.max_new_tokens, temperature=args.temperature, top_k=args.top_k)
+              print(tok.decode(y[0].tolist()))
+
+          if __name__ == "__main__":
+              main()
+          EOF
+
+          cat > src/barebonellm/server.py <<'EOF'
+          import argparse
+          import torch
+          from fastapi import FastAPI
+          from pydantic import BaseModel
+          import uvicorn
+
+          from .tokenizer import ByteTokenizer
+          from .model import GPT
+          from .utils import pick_device
+
+          app = FastAPI(title="bareboneLLM")
+
+          TOK = ByteTokenizer()
+          DEVICE = pick_device("auto")
+          MODEL = None
+
+          class GenRequest(BaseModel):
+              prompt: str
+              max_new_tokens: int = 200
+              temperature: float = 1.0
+              top_k: int | None = 64
+
+          class GenResponse(BaseModel):
+              text: str
+
+          @app.post("/generate", response_model=GenResponse)
+          def generate(req: GenRequest):
+              ids = TOK.encode(req.prompt)
+              x = torch.tensor(ids, dtype=torch.long, device=DEVICE).unsqueeze(0)
+              y = MODEL.generate(x, max_new_tokens=req.max_new_tokens, temperature=req.temperature, top_k=req.top_k)
+              return GenResponse(text=TOK.decode(y[0].tolist()))
+
+          def load_model(ckpt_path: str):
+              ckpt = torch.load(ckpt_path, map_location=DEVICE)
+              cfg = ckpt["config"]
+              mcfg = cfg["model"]
+              model = GPT(
+                  vocab_size=int(mcfg["vocab_size"]),
+                  context_length=int(cfg["context_length"]),
+                  n_layers=int(mcfg["n_layers"]),
+                  n_heads=int(mcfg["n_heads"]),
+                  d_model=int(mcfg["d_model"]),
+                  d_ff=int(mcfg["d_ff"]),
+                  dropout=float(mcfg.get("dropout", 0.0)),
+              ).to(DEVICE)
+              model.load_state_dict(ckpt["model_state"])
+              model.eval()
+              return model
+
+          def main():
+              ap = argparse.ArgumentParser()
+              ap.add_argument("--checkpoint", required=True)
+              ap.add_argument("--host", default="127.0.0.1")
+              ap.add_argument("--port", type=int, default=8000)
+              args = ap.parse_args()
+
+              global MODEL
+              MODEL = load_model(args.checkpoint)
+
+              uvicorn.run(app, host=args.host, port=args.port)
+
+          if __name__ == "__main__":
+              main()
+          EOF
+
+      - name: Commit & push
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions"
+          git config user.email "actions@github.com"
+
+          git add -A
+
+          # Avoid failing if rerun
+          if git diff --cached --quiet; then
+            echo "Nothing to commit."
+            exit 0
+          fi
+
+          git commit -m "Scaffold bareboneLLM project (train + generate + server)"
+          git push
