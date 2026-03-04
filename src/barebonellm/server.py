@@ -1,18 +1,18 @@
 import argparse
 import torch
+import uvicorn
 from fastapi import FastAPI
 from pydantic import BaseModel
-import uvicorn
 
-from .tokenizer import ByteTokenizer
 from .model import GPT
+from .tokenizer import ByteTokenizer
 from .utils import pick_device
 
 app = FastAPI(title="bareboneLLM")
 
 TOK = ByteTokenizer()
 DEVICE = pick_device("auto")
-MODEL = None
+MODEL: GPT | None = None
 
 class GenRequest(BaseModel):
     prompt: str
@@ -24,13 +24,19 @@ class GenResponse(BaseModel):
     text: str
 
 @app.post("/generate", response_model=GenResponse)
-def generate(req: GenRequest):
+def generate(req: GenRequest) -> GenResponse:
+    assert MODEL is not None, "Model not loaded"
     ids = TOK.encode(req.prompt)
     x = torch.tensor(ids, dtype=torch.long, device=DEVICE).unsqueeze(0)
-    y = MODEL.generate(x, max_new_tokens=req.max_new_tokens, temperature=req.temperature, top_k=req.top_k)
+    y = MODEL.generate(
+        x,
+        max_new_tokens=req.max_new_tokens,
+        temperature=req.temperature,
+        top_k=req.top_k,
+    )
     return GenResponse(text=TOK.decode(y[0].tolist()))
 
-def load_model(ckpt_path: str):
+def load_model(ckpt_path: str) -> GPT:
     ckpt = torch.load(ckpt_path, map_location=DEVICE)
     cfg = ckpt["config"]
     mcfg = cfg["model"]
@@ -47,7 +53,7 @@ def load_model(ckpt_path: str):
     model.eval()
     return model
 
-def main():
+def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--checkpoint", required=True)
     ap.add_argument("--host", default="127.0.0.1")

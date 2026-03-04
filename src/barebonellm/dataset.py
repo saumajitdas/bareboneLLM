@@ -5,10 +5,10 @@ from torch.utils.data import Dataset
 
 @dataclass
 class TokenDataset(Dataset):
-    tokens: torch.Tensor
+    tokens: torch.Tensor  # 1D long tensor
     context_length: int
 
-    def __len__(self):
+    def __len__(self) -> int:
         return max(0, self.tokens.numel() - self.context_length - 1)
 
     def __getitem__(self, i: int) -> Tuple[torch.Tensor, torch.Tensor]:

@@ -1,4 +1,5 @@
-import os, torch
+import os
+import torch
 
 def pick_device(device: str) -> str:
     if device == "auto":

@@ -3,7 +3,7 @@ from typing import List
 
 @dataclass
 class ByteTokenizer:
-    vocab_size: int = 256
+    vocab_size: int = 256  # fixed
 
     def encode(self, text: str) -> List[int]:
         b = text.encode("utf-8", errors="replace")

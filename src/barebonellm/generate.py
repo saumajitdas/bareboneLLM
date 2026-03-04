@@ -1,11 +1,11 @@
 import argparse
 import torch
 
-from .tokenizer import ByteTokenizer
 from .model import GPT
+from .tokenizer import ByteTokenizer
 from .utils import pick_device
 
-def main():
+def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--checkpoint", required=True)
     ap.add_argument("--prompt", required=True)
@@ -35,7 +35,12 @@ def main():
     model.eval()
 
     x = torch.tensor(tok.encode(args.prompt), dtype=torch.long, device=device).unsqueeze(0)
-    y = model.generate(x, max_new_tokens=args.max_new_tokens, temperature=args.temperature, top_k=args.top_k)
+    y = model.generate(
+        x,
+        max_new_tokens=args.max_new_tokens,
+        temperature=args.temperature,
+        top_k=args.top_k,
+    )
     print(tok.decode(y[0].tolist()))
 
 if __name__ == "__main__":

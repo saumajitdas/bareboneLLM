@@ -1,17 +1,18 @@
 import argparse
-from pathlib import Path
 import json
+from pathlib import Path
+
 import torch
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
-from .set_seed import set_seed
-from .tokenizer import ByteTokenizer
 from .dataset import TokenDataset
 from .model import GPT
-from .utils import pick_device, ensure_dir
+from .set_seed import set_seed
+from .tokenizer import ByteTokenizer
+from .utils import ensure_dir, pick_device
 
-def main():
+def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--config", required=True)
     args = ap.parse_args()
@@ -26,7 +27,12 @@ def main():
     ids = torch.tensor(tok.encode(text), dtype=torch.long)
 
     ds = TokenDataset(ids, context_length=int(cfg["context_length"]))
-    dl = DataLoader(ds, batch_size=int(cfg["batch_size"]), shuffle=True, num_workers=int(cfg.get("num_workers", 0)))
+    dl = DataLoader(
+        ds,
+        batch_size=int(cfg["batch_size"]),
+        shuffle=True,
+        num_workers=int(cfg.get("num_workers", 0)),
+    )
 
     mcfg = cfg["model"]
     model = GPT(
@@ -42,19 +48,22 @@ def main():
     tcfg = cfg["train"]
     ckpt_dir = tcfg.get("checkpoint_dir", "checkpoints")
     ensure_dir(ckpt_dir)
+    ckpt_path = Path(ckpt_dir) / "model.pt"
 
-    optim = torch.optim.AdamW(model.parameters(), lr=float(tcfg["lr"]), weight_decay=float(tcfg.get("weight_decay", 0.0)))
+    optim = torch.optim.AdamW(
+        model.parameters(),
+        lr=float(tcfg["lr"]),
+        weight_decay=float(tcfg.get("weight_decay", 0.0)),
+    )
 
     max_steps = int(tcfg["max_steps"])
     grad_clip = float(tcfg.get("grad_clip", 1.0))
     log_every = int(tcfg.get("log_every", 50))
     save_every = int(tcfg.get("save_every", 500))
 
-    ckpt_path = Path(ckpt_dir) / "model.pt"
-
-    step = 0
     it = iter(dl)
     pbar = tqdm(total=max_steps, desc="train")
+    step = 0
 
     while step < max_steps:
         try:
@@ -63,7 +72,8 @@ def main():
             it = iter(dl)
             x, y = next(it)
 
-        x, y = x.to(device), y.to(device)
+        x = x.to(device)
+        y = y.to(device)
 
         model.train()
         _, loss = model(x, y)

@@ -6,7 +6,7 @@ Replace this with real text for meaningful training.
 The quick brown fox jumps over the lazy dog.
 """
 
-def main():
+def main() -> None:
     Path("data").mkdir(parents=True, exist_ok=True)
     p = Path("data/train.txt")
     if not p.exists():
