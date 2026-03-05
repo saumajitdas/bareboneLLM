@@ -26,10 +26,6 @@ jobs:
         run: |
           python -m py_compile src/barebonellm/*.py
 
-      - name: Create sample data
-        run: |
-          python scripts/download_sample_data.py
-
       - name: Short train (CI)
         run: |
           PYTHONPATH=src python -m barebonellm.train --config configs/ci.json
