@@ -12,6 +12,8 @@ from .set_seed import set_seed
 from .tokenizer import ByteTokenizer
 from .utils import ensure_dir, pick_device
 
+from .streaming_dataset import StreamTextDataset
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--config", required=True)
@@ -22,17 +24,37 @@ def main() -> None:
 
     device = pick_device(cfg.get("device", "auto"))
 
-    text = Path(cfg["data_path"]).read_text(encoding="utf-8", errors="replace")
-    tok = ByteTokenizer()
-    ids = torch.tensor(tok.encode(text), dtype=torch.long)
+    use_streaming = bool(cfg.get("streaming", False))
 
-    ds = TokenDataset(ids, context_length=int(cfg["context_length"]))
-    dl = DataLoader(
-        ds,
-        batch_size=int(cfg["batch_size"]),
-        shuffle=True,
-        num_workers=int(cfg.get("num_workers", 0)),
-    )
+    if use_streaming:
+      ds = StreamTextDataset(
+          path=cfg["data_path"],
+          context_length=int(cfg["context_length"]),
+          chunk_bytes=int(cfg.get("chunk_bytes", 4 * 1024 * 1024)),
+          stride=int(cfg.get("stride", 8)),
+      )
+
+      dl = DataLoader(
+          ds,
+          batch_size=int(cfg["batch_size"]),
+          shuffle=False,
+          num_workers=int(cfg.get("num_workers", 0)),
+      )
+
+    else:
+      text = Path(cfg["data_path"]).read_text(encoding="utf-8", errors="replace")
+      tok = ByteTokenizer()
+      ids = torch.tensor(tok.encode(text), dtype=torch.long)
+
+      ds = TokenDataset(ids, context_length=int(cfg["context_length"]))
+
+      dl = DataLoader(
+          ds,
+          batch_size=int(cfg["batch_size"]),
+          shuffle=True,
+          num_workers=int(cfg.get("num_workers", 0)),
+      )
+
 
     mcfg = cfg["model"]
     model = GPT(
