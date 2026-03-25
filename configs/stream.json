@@ -11,6 +11,8 @@
   "data_path": "data/train.txt",
   "val_data_path": "data/val.txt",
 
+  "resume_from": "checkpoints/model.pt",
+
   "streaming": true,
   "chunk_bytes": 4194304,
   "stride": 16,
@@ -29,15 +31,15 @@
   "num_workers": 2,
 
   "model": {
-    "n_layers": 6,
-    "n_heads": 6,
-    "d_model": 384,
-    "d_ff": 1536,
+    "n_layers": 8,
+    "n_heads": 8,
+    "d_model": 512,
+    "d_ff": 2048,
     "dropout": 0.1
   },
 
   "train": {
-    "max_steps": 50000,
+    "max_steps": 50001,
     "lr": 0.0003,
     "weight_decay": 0.1,
     "grad_clip": 1.0,

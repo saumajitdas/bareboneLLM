@@ -204,11 +204,27 @@ def main() -> None:
     eval_every = int(cfg.get("eval_every", 0))
     eval_steps = int(cfg.get("eval_steps", 50))
 
+    # Resume support
+    step = 0
     best_val_loss: Optional[float] = None
+    resume_from = cfg.get("resume_from")
+
+    if resume_from:
+        resume_path = Path(resume_from)
+        if resume_path.exists():
+            print(f"Resuming from checkpoint: {resume_path}")
+            ckpt = torch.load(resume_path, map_location=device)
+            model.load_state_dict(ckpt["model_state"])
+            if "optimizer_state" in ckpt:
+                optimizer.load_state_dict(ckpt["optimizer_state"])
+            step = int(ckpt.get("step", 0))
+            best_val_loss = ckpt.get("best_val_loss")
+            print(f"Resumed at step={step}, best_val_loss={best_val_loss}")
+        else:
+            print(f"resume_from not found: {resume_path}. Starting fresh.")
 
     train_it = iter(train_dl)
-    pbar = tqdm(total=max_steps, desc="train")
-    step = 0
+    pbar = tqdm(total=max_steps, initial=step, desc="train")
 
     while step < max_steps:
         try:

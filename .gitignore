@@ -6,3 +6,6 @@ checkpoints/
 runs/
 *.pt
 data/train.txt
+# local datasets
+data/
+!data/ci_train.txt
